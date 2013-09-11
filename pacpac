@@ -1,0 +1,282 @@
+#!/bin/bash
+
+# Notes:
+	# Add config options:
+		# Set to update openbox menus with menumaker
+		
+# Bugs WIP
+
+# Changelog
+	# 1. Removed the command-line call to function searchAURquiet
+	# 2. Added command-line call to update both local and forign packages
+	# 3. Fixed update foreign package number issue. (Crash when <= 1)
+	# 4. Added forign dependency resolution
+	# 5. Fixed default read issue concerning the searchAUR function
+	# 6. Allowed searchAUR to accept multiple parameters at a time
+
+function Interactive {
+	while [ 1 ]; do
+		clear
+		echo "-- Standard --"
+		echo "1: Update system [-Syu]"
+		echo "2: Search packages [-Ss]"
+		echo "3: Install packages [-S]"
+		echo "4: Remove packages [-Rsn]"
+		echo ""
+		echo "-- AUR --"
+		echo "5: Update AUR packages [-Sa]"
+		echo "6: Search AUR packages [-Ssa]"
+		echo "7: Install tar.gz from ~/Downloads [-A]"
+		echo ""
+		echo "-- Other --"
+		echo "8: Remove orphan packages [-K]"
+		echo "9: Clear cache and optimize database [-Sc; pacman-optimize]"
+		echo "10: Exit"
+		echo ""
+		read ch
+		if [ "$ch" == "1" ]; then
+			clear
+			sudo pacman -Syu
+			UpdateMenus
+		elif [ "$ch" == "2" ]; then
+			clear
+			echo "Enter search criteria:"
+			echo ""
+			read packages
+			pacman -Ss $packages
+			echo ""
+			echo "Press [ENTER] to continue..."
+			read
+		elif [ "$ch" == "3" ]; then
+			clear
+			echo "Enter packages"
+			echo ""
+			read packages
+			sudo pacman -S $packages
+			UpdateMenus
+		elif [ "$ch" == "4" ]; then
+			clear
+			echo "Enter packages"
+			echo ""
+			read packages
+			sudo pacman -Rsn $packages
+			UpdateMenus
+		elif [ "$ch" == "5" ]; then
+			clear
+			pacpac -Sa
+		elif [ "$ch" == "6" ]; then
+			clear
+			echo "Enter package to search for"
+			echo ""
+			read pack2search
+			pacpac -Ssa $pack2search
+		elif [ "$ch" == "7" ]; then
+			clear
+			echo "Enter package without \"tar.gz\""
+			echo ""
+			read IntActPack
+			pacpac -A $IntActPack
+		elif [ "$ch" == "8" ]; then
+			clear
+			KillOrphans
+		elif [ "$ch" == "9" ]; then
+			clear
+			sudo pacman -Sc
+			sudo pacman-optimize
+		elif [ "$ch" == "10" ]; then
+			clear
+			exit
+			
+		else
+			echo ""
+		fi
+	done
+}
+
+function UpdateMenus {
+	mmaker OpenBox3 -t Xterm -s Console -f
+	openbox --reconfigure
+	echo "Your menus are up-to-date"
+}
+
+function AURBuild {
+	WorkingDir=`pwd`
+	cd ~/Downloads
+	tar -xf $1.tar.gz
+	cd $1
+	echo "Edit PKGBUILD? (y/n)"
+	read ch
+	if [ "$ch" == "y" ]; then
+		nano PKGBUILD
+	fi
+	dependencies=$(cat PKGBUILD | sed -n 's|[^<]*depends=(\([^<]*\))[^<]*|\1\n|gp')
+	dependencies=$(echo $dependencies | tr -d "'><=.[0-9]")
+	depArray=($dependencies)
+	echo "Checking for foreign dependencies..."
+	for i in "${depArray[@]}"; do
+		searchAURquiet $i
+	done
+	makepkg -scfi --noconfirm && rm -r ~/Downloads/$1*
+	clear
+	if [ -d ~/Downloads/$1 ]; then
+		echo "There seems to have been a problem installing"
+		echo "Would you like to keep files for manual installation?"
+		echo "(y/n)"
+		read ch2
+		if [ "$ch2" == "n" ]; then
+			rm -r ~/Downloads/$1*
+		fi
+	fi
+	cd $WorkingDir
+}
+
+function aurDL {
+	pack2dl_pre=${1:0:2}
+	wget -q -O ~/Downloads/$1.tar.gz https://aur.archlinux.org/packages/$pack2dl_pre/$1/$1.tar.gz
+	pacpac -A $1
+}
+
+function aurUpdate {
+	updateArray=()
+	if [ $(pacman -Qm | wc -l) == 0 ]; then
+		echo "No packages to update"
+	elif [ $(pacman -Qm | wc -l) == 1 ]; then
+		Pack="$(pacman -Qm | cut -f1 -d ' ')"
+		echo "Package: $Pack"
+		localVersion="$(pacman -Qm | cut -f2 -d ' ')"
+		remoteVersion="$(wget -q -O - https://aur.archlinux.org/packages/${Pack}/ |\
+		 sed -n 's|[^<]*<h2>\([^<]*\)</h2>[^<]*|\1\n|gp' |\
+		 sed '1d' | cut -f4 -d ' ')"
+		remoteVersion="$(echo $remoteVersion | tr -d ' ')"
+		echo "Local Version: $localVersion / Remote Version: $remoteVersion"
+		if [ "$localVersion" == "$remoteVersion" ]; then
+			echo -e "Latest version installed\n"
+		else
+			echo -e "New version available\n"
+			updateArray+=("$Pack")
+		fi
+	else
+		aurMax="$(pacman -Qm | wc -l)"
+		secondPos="$((aurMax-1))"
+		fourthPos=3
+		Pack="$(pacman -Qm | cut -f1 -d ' ' | sed "1,${secondPos}d")"
+		echo "Package: $Pack"
+		localVersion="$(pacman -Qm | cut -f2 -d ' ' | sed "1,${secondPos}d")"
+		remoteVersion="$(wget -q -O - https://aur.archlinux.org/packages/${Pack}/ |\
+		 sed -n 's|[^<]*<h2>\([^<]*\)</h2>[^<]*|\1\n|gp' |\
+		 sed '1d' | cut -f4 -d ' ')"
+		remoteVersion="$(echo $remoteVersion | tr -d ' ')"
+		echo "Local Version: $localVersion / Remote Version: $remoteVersion"
+		if [ "$localVersion" == "$remoteVersion" ]; then
+			echo -e "Latest version installed\n"
+		else
+			echo -e "New version available\n"
+			updateArray+=("$Pack")
+		fi
+		while [ "$secondPos" != "1" ]; do
+			secondPos="$((secondPos-1))"
+			Pack="$(pacman -Qm | cut -f1 -d ' ' | sed "1,${secondPos}d" | sed "2,${fourthPos}d")"
+			echo "Package: $Pack"
+			localVersion="$(pacman -Qm | cut -f2 -d ' ' | sed "1,${secondPos}d" | sed "2,${fourthPos}d")"
+			remoteVersion="$(wget -q -O - https://aur.archlinux.org/packages/${Pack}/ |\
+			sed -n 's|[^<]*<h2>\([^<]*\)</h2>[^<]*|\1\n|gp' |\
+			sed '1d' | cut -f4 -d ' ')"
+			remoteVersion="$(echo $remoteVersion | tr -d ' ')"
+			echo "Local Version: $localVersion / Remote Version: $remoteVersion"
+			if [ "$localVersion" == "$remoteVersion" ]; then
+				echo -e "Latest version installed\n"
+				else
+					echo -e "New version available\n"
+					updateArray+=("$Pack")
+				fi
+				fourthPos="$((fourthPos+1))"
+		done
+		Pack="$(pacman -Qm | cut -f1 -d ' ' | sed "2,${aurMax}d")"
+		echo "Package: $Pack"
+		localVersion="$(pacman -Qm | cut -f2 -d ' ' | sed "2,${aurMax}d")"
+		remoteVersion="$(wget -q -O - https://aur.archlinux.org/packages/${Pack}/ |\
+		sed -n 's|[^<]*<h2>\([^<]*\)</h2>[^<]*|\1\n|gp' |\
+		sed '1d' | cut -f4 -d ' ')"
+		remoteVersion="$(echo $remoteVersion | tr -d ' ')"
+		echo "Local Version: $localVersion / Remote Version: $remoteVersion"
+		if [ "$localVersion" == "$remoteVersion" ]; then
+			echo -e "Latest version installed\n"
+		else
+			echo -e "New version available\n"
+			updateArray+=("$Pack")
+		fi
+		for i in "${updateArray[@]}"; do
+			pacpac -Aa $i
+		done
+	fi
+}
+
+function KillOrphans {
+	if [[ ! -n $(pacman -Qdt) ]]; then
+		echo "No orphan packages to remove"
+		echo "Press [Enter] to continue..."
+		read
+	else
+		sudo pacman -Rs $(pacman -Qdtq)
+		UpdateMenus
+	fi
+}
+
+function searchAUR {
+	searchArray=($1 $2 $3 $4 $5 $6 $7 $8)
+	for i in "${searchArray[@]}"; do
+		if wget -O - https://aur.archlinux.org/packages/$i/ >/dev/null 2>&1; then 
+			echo "$i exists within the AUR"
+			echo "Would you like to install it? (y/n)"
+			read ch
+			if [ "$ch" == "y" ] || [ "$ch" == "" ]; then
+				pacpac -Aa $i
+			fi
+		else 
+			echo "$i doesn't exist on the AUR."
+			echo "Consider trying $i-git or $i-bzr"
+			echo "If all else fails, open web-browser and search."
+			echo ""
+			echo "Press [Enter] to continue..."
+			read
+		fi
+	done
+}
+
+function searchAURquiet {
+	if wget -O - https://aur.archlinux.org/packages/$1/ >/dev/null 2>&1; then
+		echo "Installing $1 from the AUR as a dependency"
+		pacpac -Aa $1
+	fi
+}
+
+if [ -z $1 ]; then
+Interactive
+fi
+case "$1" in
+	-A) AURBuild $2
+		UpdateMenus
+		;;
+	-Aa) aurDL $2
+		;;
+	-Sa) aurUpdate
+		UpdateMenus
+		;;
+	-Ssa) searchAUR $2 $3 $4 $5 $6 $7 $8 $9
+		;;
+	-K) KillOrphans
+		;;
+	-Syua) pacpac -Syu && echo "" && pacpac -Sa
+		;;
+	-Ss) pacman $1 $2 $3 $4 $5 $6 $7 $8 $9
+		;;
+	-Q) pacman $1 $2 $3 $4 $5 $6 $7 $8 $9
+		;;
+	-Qs) pacman $1 $2 $3 $4 $5 $6 $7 $8 $9
+		;;
+	-Qm) pacman $1 $2 $3 $4 $5 $6 $7 $8 $9
+		;;
+	*) sudo pacman $1 $2 $3 $4 $5 $6 $7 $8 $9
+		UpdateMenus
+		;;		
+esac
